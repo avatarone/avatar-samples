@@ -1,0 +1,27 @@
+This module detects a bug in U-Boot. The bug is located in the parser of the
+environment. No memory proxying is done for triggering this bug. The patch was
+submited here[1].
+
+
+What to expect
+==============
+Buggy version:
+One of the states will enter in a an infinite loop.
+OK version:
+All the states will finish.
+
+Running
+=======
+Note: before running avatar reset the board and press enter to stop autoboot.
+(The /real/ serial is on /dev/ttyUSB1)
+
+A emulated serial device and a emulated timer has been added, hence, you can
+see the output of the serial console by doing telnet localhost 8888.
+
+TODO
+====
+Memory proxying is working but no relevant tests could be done. Enumerating the
+USB devices doesn't work because of the latency introduced by the remote
+memory plugin.
+
+[1] http://patchwork.ozlabs.org/patch/240308/
