@@ -1,0 +1,9 @@
+#Follow these steps to build a u-boot image that runs with qemu-integratorcp (S2E)
+#Instructions work only on Linux
+wget ftp://ftp.denx.de/pub/u-boot/u-boot-2009.01.tar.bz2
+tar xf u-boot-2009.01.tar.bz2
+cd u-boot-2009.01
+make integratorcp_config
+make ARCH=arm CROSS_COMPILE=arm-none-eabi-
+${S2E_QEMU} -M integratorcp -cpu arm1136 -serial stdio -kernel u-boot
+
