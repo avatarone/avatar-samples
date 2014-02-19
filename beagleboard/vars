@@ -4,10 +4,12 @@
 function get_default_vars()
 {
 
+		# these are the variables that has to be defined in myvars file
 		export PYTHONPATH=/mnt/store/eurecom/avatar-python
 		export LINARO_QEMU_ARM=/mnt/store/eurecom/qemu-linaro/arm-softmmu/qemu-system-arm
 		export UBOOT_DIR=/mnt/store/eurecom/u-boot
 		export QEMU_S2E=/mnt/store/eurecom/s2e-build-release/qemu-release/arm-s2e-softmmu/qemu-system-arm
+		export GDB_PATH=/home/lucian/eurecom/gdb-arm/gdb/gdb
 }
 
 if `test -f ./myvars`; then

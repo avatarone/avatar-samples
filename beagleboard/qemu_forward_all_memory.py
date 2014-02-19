@@ -17,6 +17,7 @@ from avatar.targets.gdbserver_target import init_gdbserver_target
 
 LINARO_QEMU_ARM = "LINARO_QEMU_ARM" in os.environ and os.environ["LINARO_QEMU_ARM"] or None
 UBOOT_DIR = "UBOOT_DIR" in os.environ and os.environ["UBOOT_DIR"] or None
+GDB_PATH = "GDB_PATH" in os.environ and os.environ["GDB_PATH"] or None
 
 log = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ log = logging.getLogger(__name__)
 configuration = {
     "output_directory": "/tmp/2/",
     "configuration_directory": os.getcwd(),
+    "emulator_gdb_path": GDB_PATH,
     "s2e": {
         "klee": {
         },
@@ -87,7 +89,7 @@ configuration = {
     },
     "avatar_configuration": {
         "target_gdb_address": "tcp:localhost:4444",
-        "target_gdb_path": "arm-none-eabi-gdb"
+        "target_gdb_path": GDB_PATH
     }
 }
 
