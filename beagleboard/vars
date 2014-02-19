@@ -1,0 +1,19 @@
+# you can modify this file or add a new file with customized information called
+# `myvars'
+
+function get_default_vars()
+{
+
+		export PYTHONPATH=/mnt/store/eurecom/avatar-python
+		export LINARO_QEMU_ARM=/mnt/store/eurecom/qemu-linaro/arm-softmmu/qemu-system-arm
+		export UBOOT_DIR=/mnt/store/eurecom/u-boot
+		export QEMU_S2E=/mnt/store/eurecom/s2e-build-release/qemu-release/arm-s2e-softmmu/qemu-system-arm
+}
+
+if `test -f ./myvars`; then
+	echo Sourcing ./myvars
+	source ./myvars
+else
+	echo Using default vars
+	get_default_vars
+fi
