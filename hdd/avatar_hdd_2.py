@@ -19,9 +19,11 @@ import os
 import time
 import sys
 import argparse
+import serial
 from avatar.targets.avatarstub_target import init_avatarstub_target
 from avatar.emulators.s2e.debug_s2e_emulator import init_debug_s2e_emulator
 from avatar.targets.gdbserver_target import init_gdbserver_target
+from collections import OrderedDict
 
 
 from Seagate_ST3320413AS_flasher import ResetController, StubDownloader
@@ -34,47 +36,41 @@ configuration = {
     "output_directory": "/tmp/2",
     "configuration_directory": os.getcwd(),
     "s2e": {
+        "s2e_binary": "QEMU_S2E" in os.environ and os.environ["QEMU_S2E"] or os.path.expanduser("~/projects/avatar-pandora/s2e-build/qemu-release/arm-s2e-softmmu/qemu-system-arm"),
+        "emulator_gdb_path":"../../gdb-arm/gdb/gdb",
         "klee": {
         },
-        "plugins": {
-            "BaseInstructions": {},
-            "Initializer": {},
-            "RemoteMemory": {
+        "plugins": OrderedDict([
+            ("BaseInstructions", {}),
+            ("Initializer", {}),
+            ("MemoryInterceptor", ""),
+            ("RemoteMemory", {
                 "verbose": True,
-                "listen_address": "localhost:3333"
-            },
-            "MemoryInterceptorMediator": {
-                "verbose": True,
-                            "interceptors": {
-                    "RemoteMemory": {
-                        "sram_code": {
-                            "range_start": 0x8000, 
-                            "range_end": 0xfffff,
-                            "priority": 0,
-                            "access_type": ["read", "write", "execute", "io", "memory", "concrete_value", "concrete_address"]
-                        },
-                        "dram": {
-                            "range_start": 0x120000, 
-                            "range_end": 0x3ffffff,
-                            "priority": 0,
-                            "access_type": ["read", "write", "execute", "io", "memory", "concrete_value", "concrete_address"]
-                        },
-                        "after_stack_before_uart": {
-                            "range_start": 0x4010000, 
-                            "range_end": 0x400d2fff,
-                            "priority": 0,
-                            "access_type": ["read", "write", "execute", "io", "memory", "concrete_value", "concrete_address"]
-                        },
-                        "io_after_uart": {
-                            "range_start": 0x400d4000, 
-                            "range_end": 0xffffffff,
-                            "priority": 0,
-                            "access_type": ["read", "write", "execute", "io", "memory", "concrete_value", "concrete_address"]
-                        }
+                "listen_address": "localhost:3333",
+                "ranges": {
+                    "sram_code": {
+                        "address": 0x8000, 
+                        "size": 0x100000 - 0x8000,
+                        "access": ["read", "write", "execute"]
+                    },
+                    "dram": {
+                        "address": 0x120000, 
+                        "size": 0x4000000 - 0x120000,
+                        "access": ["read", "write", "execute"]
+                    },
+                    "after_stack_before_uart": {
+                        "address": 0x4010000, 
+                        "size": 0x400d3000 - 0x4010000,
+                        "access": ["read", "write", "execute"]
+                    },
+                    "io_after_uart": {
+                        "address": 0x400d4000, 
+                        "size": 0x100000000 - 0x400d4000,
+                        "access": ["read", "write", "execute"]
                     }
-                            }
-            }
-        }
+                }
+            }),
+       ]) 
     },
     "qemu_configuration": {
             "halt_processor_on_startup": True,
@@ -87,6 +83,7 @@ configuration = {
         },
     "machine_configuration": {
             "architecture": "arm",
+            "endianness": "little",
             "cpu_model": "arm926",
             "entry_address": 0x100000,
             "memory_map": [
@@ -163,7 +160,7 @@ configuration = {
                                     ]
                                 },
     "avatar_configuration": {
-        "target_gdb_address": "tcp:localhost:4444"
+        "target_gdb_path":"../../gdb-arm/gdb/gdb"
     }
 }
 
@@ -179,11 +176,19 @@ class TargetLauncher(threading.Thread):
         self._event = threading.Event()
             
     def run(self):
-        stub_downloader = StubDownloader(ResetController(self._reset_controller_script), self._serial)
-        log.info("[TargetLauncher] Opened serial connection to the HDD, now downloading GDB stub")
-        stub_downloader.load_stub(self._gdbstub_file, self._load_address, self._entry_point)
-        log.info("[TargetLauncher] Stub download finished, waiting for TCP connection")
-        self._event.set()
+        while not self._event.is_set():
+            stub_downloader = None
+            try:
+                stub_downloader = StubDownloader(ResetController(self._reset_controller_script), self._serial)
+                log.info("[TargetLauncher] Opened serial connection to the HDD, now downloading GDB stub")
+                stub_downloader.load_stub(self._gdbstub_file, self._load_address, self._entry_point)
+                log.info("[TargetLauncher] Stub download finished, waiting for TCP connection")
+                self._event.set()
+            except serial.serialutil.SerialException as ex:
+                if not str(ex).startswith("write failed: [Errno 5]"):
+                    raise ex
+                if not stub_downloader is None:
+                    del stub_downloader
         stub_downloader.serve_serial_port(self._serve_port)
         log.error("[TargetLauncher] Client disconnected, shutting down")
         
@@ -242,6 +247,12 @@ def main():
                                   flasher_port)
     hdd_launcher.start()
     hdd_launcher.wait()
+
+    log.info("HDD gdb stub installed and running")
+
+    ava = System(configuration, init_s2e_emulator, init_gdbserver_target)
+    ava.init()
+    ava.start()
     
     print("Target is started!")
     
