@@ -164,6 +164,7 @@ configuration = {
     }
 }
 
+
 class TargetLauncher(threading.Thread):
     def __init__(self, gdbstub_file, load_address, entry_point, reset_controller_script, serial_port, serve_port):
         super(TargetLauncher, self).__init__()
@@ -185,10 +186,16 @@ class TargetLauncher(threading.Thread):
                 log.info("[TargetLauncher] Stub download finished, waiting for TCP connection")
                 self._event.set()
             except serial.serialutil.SerialException as ex:
-                if not str(ex).startswith("write failed: [Errno 5]"):
+                if str(ex).startswith("write failed: [Errno 5]"):
+                    if not stub_downloader is None:
+                        del stub_downloader
+                elif str(ex).startswith("could not open port"):
+                    log.warn("Received exception \"%s\"; check that you specified a valid port", str(ex))
+                    if not stub_downloader is None:
+                        del stub_downloader
+                    time.sleep(10)
+                else:
                     raise ex
-                if not stub_downloader is None:
-                    del stub_downloader
         stub_downloader.serve_serial_port(self._serve_port)
         log.error("[TargetLauncher] Client disconnected, shutting down")
         
@@ -206,10 +213,15 @@ def parse_arguments():
         help = "Executable that can switch the HDD on and off (\"on\" or \"off\" is passed as first argument)")
     parser.add_argument("--serial", type = str, metavar = "FILE", dest = "serial", default = "/dev/ttyUSB0",
         help = "Serial port to which the HDD is connected")
-    parser.add_argument("--gdbstub", type = str, metavar = "FILE", dest = "gdbstub",
+    parser.add_argument("--gdbstub-sram", type = str, metavar = "FILE", dest = "gdbstub",
         default = os.path.expanduser("~/projects/avatar-pandora/avatar-gdbstub-build/cmake/"),
         help = "GDB stub that is injected in the HDD")
-    parser.add_argument("--gdbstub-loadaddress", type = int, dest = "gdbstub_loadaddress", default = 0x7000,
+    parser.add_argument("--gdbstub-sram-address", type = int, dest = "gdbstub_loadaddress", default = 0x7000,
+        help = "Load address of GDB stub")
+    parser.add_argument("--gdbstub-high", type = str, metavar = "FILE", dest = "gdbstub_high",
+        default = os.path.expanduser("~/projects/avatar-pandora/avatar-gdbstub-build/cmake/"),
+        help = "GDB stub that is injected in the HDD")
+    parser.add_argument("--gdbstub-high-address", type = int, dest = "gdbstub_high_loadaddress", default = 0x3fc000,
         help = "Load address of GDB stub")
     parser.add_argument("-o", "--output", type = str, metavar = "DIRECTORY", dest = "output_directory",
         default = "/tmp/avatar-output",
@@ -228,6 +240,122 @@ def set_verbosity(verbosity):
         logging.basicConfig(level = logging.WARN)
     else:
         logging.basicConfig(level = logging.ERROR)
+
+
+def boot_hdd_until_bootloader_firmware_entry(ava):
+    ava.get_target().set_register("pc", 0x40)
+    ava.get_target().set_register("cpsr", ava.get_target().get_register("cpsr") & ~0x20)
+    bkpt_end_of_bootstrapper = ava.get_target().set_breakpoint(0x23e)
+    ava.get_target().cont()
+
+    # Execute till 0x23e, the end of the bootstrapper
+    bkpt_end_of_bootstrapper.wait()
+    bkpt_end_of_bootstrapper.delete()
+
+    # Replace memory protection activation with nops
+    ava.get_target().write_typed_memory(0x105e, 2, 0x46c0)
+    ava.get_target().write_typed_memory(0x1060, 2, 0x46c0)
+
+    # Intercept flash loads
+    bkpt_beginning_of_flash_load_function = ava.get_target().set_breakpoint(0x301e)
+    def handle_hdd_flash_load(ava, bkpt):
+        TEMP_READ_IRQ_TABLE_ADDRESS = 0x7fb0
+        ram_address = ava.get_target().get_register("r1")
+        flash_address = ava.get_target().get_register("r2")
+        size_in_words = ava.get_target().get_register("r3")
+
+        log.debug("Loading 0x%x bytes from flash address 0x%x to ram address 0x%08x", size_in_words * 4, flash_address, ram_address)
+
+        if ram_address == 0 and size_in_words > 0:
+            #Divert flash loading to another address
+            ava.get_target().set_register("r1", TEMP_READ_IRQ_TABLE_ADDRESS)
+
+            bkpt_after_flash_load = ava.get_target().set_breakpoint(0x3044)
+            def handle_after_flash_load(ava, bkpt):
+                #Copy all exception vector entries except the ones that the GDB stub needs
+                for offset in [0x0, 0x4, 0x8, 0x14, 0x18, 0x1c, 0x20, 0x24, 0x28, 0x34, 0x38, 0x3c]:
+                    ava.get_target().write_typed_memory(0x0 + offset, 4, ava.get_target().read_typed_memory(TEMP_READ_IRQ_TABLE_ADDRESS + offset, 4))
+                bkpt.delete()
+                ava.get_target().cont()
+            bkpt_after_flash_load.set_handler(handle_after_flash_load)
+        ava.get_target().cont()
+    bkpt_beginning_of_flash_load_function.set_handler(handle_hdd_flash_load)
+
+
+
+    # Continue until entry to bootloader firmware, intercept flash loads on the way 
+    bkpt_entry_to_bootloader_firmware = ava.get_target().set_breakpoint(0x10a4)
+    ava.get_target().cont()
+
+    bkpt_entry_to_bootloader_firmware.wait()
+    bkpt_beginning_of_flash_load_function.delete()
+    bkpt_entry_to_bootloader_firmware.delete()
+
+    # Debug print output from bootloader firmware
+#    bkpt_print_output_from_bootloader_fw = ava.get_target().set_breakpoint(0x244518)
+#    def handle_print_output_from_bootloader_fw(ava, bkpt):
+#        ptr = ava.get_target().get_register("r0")
+#        i = 0
+#        buffer = []
+#        while True:
+#            byte = ava.get_target().read_typed_memory(ptr + i, 1)
+#            if byte == 0:
+#                break
+#            buffer.append(byte)
+#            i += 1
+#
+#        print("Print from bootloader FW: %s" % bytes(buffer).decode(encoding = 'iso-8859-1'))
+#        ava.get_target().cont()
+#
+#    bkpt_print_output_from_bootloader_fw.set_handler(handle_print_output_from_bootloader_fw)
+    print("Apparently everything went well ...")
+
+def boot_hdd_from_boot_firmware_entry_to_main_firmware_entry(ava):
+    # Move GDB stub to high memory
+    ava.get_target().execute_gdb_command(
+        ["restore", 
+         configuration["avatar_configuration"]["gdbstub_high"],
+         "binary",
+         "0x%x" % configuration["avatar_configuration"]["gdbstub_high_address"]])
+    ava.get_target().write_typed_memory(0x2c, 4, configuration["avatar_configuration"]["gdbstub_high_address"] + 4)
+    ava.get_target().write_typed_memory(0x30, 4, configuration["avatar_configuration"]["gdbstub_high_address"] + 8)
+
+    print("GDB stub moved")
+
+    # Break right before entering bootstrapper to main fw
+    bkpt_before_bootstrapper_to_main_Fw = ava.get_target().set_breakpoint(0x246c28)
+    ava.get_target().cont()
+    bkpt_before_bootstrapper_to_main_Fw.wait()
+    bkpt_before_bootstrapper_to_main_Fw.delete()
+
+    bkpt_main_fw_bootstrapper_copy_section = ava.get_target().set_breakpoint(0x22ba1e)
+    def handle_main_fw_bootstrapper_load_section(ava, bkpt):
+        TEMP_READ_IRQ_TABLE_ADDRESS = 0x358000
+        from_address = ava.get_target().get_register("r4")
+        to_address = ava.get_target().get_register("r6")
+        size = ava.get_target().get_register("r7") >> 12
+        
+        log.debug("Main FW bootstrapper: Copying section from 0x%08x to 0x%08x (size 0x%x)", from_address, to_address, size)
+
+        if to_address == 0 and size != 0:
+            for offset in [0, 4, 8, 0x14, 0x18, 0x1c, 0x20, 0x24, 0x28, 0x34, 0x38, 0x3c]:
+                ava.get_target().write_typed_memory(to_address + offset, 4, ava.get_target().read_typed_memory(from_address + offset, 4))
+
+            ava.get_target().set_register("r4", ava.get_target().get_register("r4") + 0x40)
+            ava.get_target().set_register("r6", ava.get_target().get_register("r6") + 0x40)
+            ava.get_target().set_register("r5", ava.get_target().get_register("r5") + 0x10)
+        ava.get_target().cont()
+    bkpt_main_fw_bootstrapper_copy_section.set_handler(handle_main_fw_bootstrapper_load_section)
+    bkpt_jump_to_main_fw = ava.get_target().set_breakpoint(0x22ba44)
+    
+    ava.get_target().cont()
+    bkpt_jump_to_main_fw.wait()
+    bkpt_main_fw_bootstrapper_copy_section.delete()
+    bkpt_jump_to_main_fw.delete()
+
+    ava.get_target().write_typed_memory(0xa48, 2, 0x46c0)
+    ava.get_target().write_typed_memory(0xa4a, 2, 0x46c0)
+
         
 def main():
     args = parse_arguments()
@@ -236,7 +364,8 @@ def main():
     configuration["output_directory"] = args.output_directory
     flasher_port = args.hdd_port #TODO: If flasher_port is None, assign a port
     configuration["avatar_configuration"]["target_gdb_address"] = "tcp:127.0.0.1:%d" % flasher_port
-    
+    configuration["avatar_configuration"]["gdbstub_high"] = args.gdbstub_high
+    configuration["avatar_configuration"]["gdbstub_high_address"] = args.gdbstub_high_loadaddress
     
     #Start target
     hdd_launcher = TargetLauncher(args.gdbstub, 
@@ -253,8 +382,15 @@ def main():
     ava = System(configuration, init_s2e_emulator, init_gdbserver_target)
     ava.init()
     ava.start()
+
+    # Configure target GDB
+    ava.get_target().execute_gdb_command(["set", "arm", "frame-register", "off"])
+    ava.get_target().execute_gdb_command(["set", "arm", "force-mode", "thumb"])
     
     print("Target is started!")
+    boot_hdd_until_bootloader_firmware_entry(ava)
+    boot_hdd_from_boot_firmware_entry_to_main_firmware_entry(ava)
+    print("Arrived at the holy grail")
     
     
 
