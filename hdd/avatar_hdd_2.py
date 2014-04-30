@@ -79,7 +79,7 @@ configuration = {
             "gdb": "tcp::1235,server,nowait",
 #            "append": ["-serial", "tcp::8888,server,nowait", "-nographic"]
 #            "append": ["-serial", "tcp::8888,server,nowait", "-qmp", "tcp::1238,server,nowait"]
-            "append": ["-serial", "tcp::8888,server,nowait"]
+#            "append": ["-serial", "tcp::8888,server,nowait"]
         },
     "machine_configuration": {
             "architecture": "arm",
@@ -228,6 +228,8 @@ def parse_arguments():
         help = "Directory where resulting configuration and log files will be stored")
     parser.add_argument("--hdd-port", type = int, default = 2000, dest = "hdd_port",
         help = "Port where HDD flasher is listening")
+    action = parser.add_mutually_exclusive_group(required = True)
+    action.add_argument("--trace-bootloader", dest = "action", action = "store_const", const = "TRACE_BOOTLOADER", help = "Trace bootloader access for CCS experiments")
         
     return parser.parse_args()
         
@@ -356,29 +358,54 @@ def boot_hdd_from_boot_firmware_entry_to_main_firmware_entry(ava):
     ava.get_target().write_typed_memory(0xa48, 2, 0x46c0)
     ava.get_target().write_typed_memory(0xa4a, 2, 0x46c0)
 
-        
-def main():
-    args = parse_arguments()
-    set_verbosity(args.verbosity)
-    
+def start_in_emulator(ava):
+    bkpt_load_from_flash = ava.get_emulator().set_breakpoint(0x100aae)
+    def handle_load_from_flash(ava, bkpt):
+        ram_addr = ava.get_emulator().get_register("r1")
+        flash_addr = ava.get_emulator().get_register("r2")
+        len_in_words = ava.get_emulator().get_register("r3")
+        return_address = ava.get_emulator().get_register("lr")
+
+        log.info("Loading 0x%x bytes from flash address 0x%x to ram address 0x%x", len_in_words * 4, flash_addr, ram_addr)
+        if len_in_words > 0:
+            ava.get_emulator().execute_gdb_command(["restore", 
+                                                    os.path.join(configuration["configuration_directory"], "JC49_flash.raw"), 
+                                                    "binary", 
+                                                    "%d" % (ram_addr - flash_addr), 
+                                                    "0x%x" % flash_addr,
+                                                    "0x%x" % (flash_addr + 4 * len_in_words)])
+
+        #Return to caller
+        ava.get_emulator().set_register("pc", return_address & 0xFFFFFFFE)
+        thumb_bit = (return_address & 1) << 5
+        cpsr = ava.get_emulator().get_register("cpsr")
+        ava.get_emulator().set_register("cpsr", (cpsr & 0xFFFFFFDF) | thumb_bit)
+        ava.get_emulator().cont()
+    bkpt_load_from_flash.set_handler(handle_load_from_flash)
+    ava.get_emulator().cont()
+
+def configure(args):
     configuration["output_directory"] = args.output_directory
+    configuration["flasher_port"] = args.hdd_port
     flasher_port = args.hdd_port #TODO: If flasher_port is None, assign a port
     configuration["avatar_configuration"]["target_gdb_address"] = "tcp:127.0.0.1:%d" % flasher_port
     configuration["avatar_configuration"]["gdbstub_high"] = args.gdbstub_high
     configuration["avatar_configuration"]["gdbstub_high_address"] = args.gdbstub_high_loadaddress
     
+def start_hdd(args):
     #Start target
     hdd_launcher = TargetLauncher(args.gdbstub, 
                                   args.gdbstub_loadaddress, 
                                   args.gdbstub_loadaddress, 
                                   args.power_control,
                                   args.serial,
-                                  flasher_port)
+                                  configuration["flasher_port"])
     hdd_launcher.start()
     hdd_launcher.wait()
 
     log.info("HDD gdb stub installed and running")
 
+def start_avatar():
     ava = System(configuration, init_s2e_emulator, init_gdbserver_target)
     ava.init()
     ava.start()
@@ -386,13 +413,160 @@ def main():
     # Configure target GDB
     ava.get_target().execute_gdb_command(["set", "arm", "frame-register", "off"])
     ava.get_target().execute_gdb_command(["set", "arm", "force-mode", "thumb"])
+
+    return ava
+
+def add_emulated_serial_port_to_emulator_configuration(data_string):
+    """Add a memory interceptor that injects serial port data"""
+    configuration["s2e"]["plugins"]["ModuleExecutionDetector"] = """
+            trackAllModules = true,
+            configureAllModules = true,
+            ram_module = {
+                moduleName = "ram_module",
+                kernelMode = true,
+            },
+        """
+    configuration["s2e"]["plugins"]["RawMonitor"] = """
+            kernelStart = 0,
+            -- we consider RAM
+            ram_module = {
+                delay      = false,
+                name       = "ram_module",
+                start      = 0x00000000,
+                size       = 0xffffffff,
+                nativebase = 0x00000000,
+                kernelmode = false
+            }
+        """
+    configuration["s2e"]["plugins"]["MemoryInterceptor"] = ""
+    configuration["s2e"]["plugins"]["Annotation"] = ""
+    configuration["s2e"]["plugins"]["MemoryInterceptorAnnotation"] = """
+            verbose = true,
+            interceptors = {
+                uart_data = {
+                    address = 0x400d3000,
+                    size = 4 * 10,
+                    access_type = {"read", "concrete_address", "concrete_value"},
+                    read_handler = "ann_uart_read_data"
+                }
+            }
+        """
+
+    uart_lua_file = os.path.join(configuration["output_directory"], "uart.lua") 
+    with open(uart_lua_file, 'w') as file:
+        file.write("""
+            UART_DATA = {%s}
+            function ann_uart_read_data(state, plg, address, size, is_io, is_code)
+                pc = state:readRegister("pc")
+                if pc == 0x100bca then
+                    return 0, 0 -- Do not bother with writes to serial port
+                end
+                reg = (address - 0x400d3000) / 4
+                io.write(string.format("Reading UART register %%d at 0x%%08x\\n", reg, pc)) 
+                if reg == 0 then
+                    counter = plg:getValue("uart_counter")
+                    plg:setValue("uart_counter", counter + 1)  
+                    if counter < table.getn(UART_DATA) then
+                        return 1, UART_DATA[counter]
+                    else
+                        plg:exit()
+                    end
+                elseif reg == 5 then --Flag register
+                    return 1, 0xc1 -- return always TX empty, RX full
+                elseif reg == 1 then --Status register 
+                    return 1, 0
+                end
+            end
+            """ % ", ".join(["0x%02x" % x for x in data_string]))
+
+    if not "include" in configuration["s2e"]:
+        configuration["s2e"]["include"] = []
+    configuration["s2e"]["include"].append(uart_lua_file)
     
-    print("Target is started!")
+
+first_load_from_flash = True
+
+def trace_bootloader(args):
+    """Start execution in the emulator, then input some commands to the bootloader, and finally boot the firmware. Stop before entering code
+       loaded from flash."""
+    configure(args)
+    #Configure serial port to read data from text file
+
+    if not "append" in configuration["qemu_configuration"]:
+        configuration["qemu_configuration"]["append"] = []
+    configuration["qemu_configuration"]["append"] += ["-serial", "file:%s" % os.path.join(configuration["output_directory"], "serial_output.txt")]
+
+    configuration["s2e"]["plugins"]["ExecutionTracer"] = ""
+    configuration["s2e"]["plugins"]["InstructionTracer"] = "compression = \"gzip\""
+    configuration["s2e"]["plugins"]["MemoryTracer"] = "{monitorMemory = true, manualTrigger = false, timeTrigger = false}"
+
+    add_emulated_serial_port_to_emulator_configuration("UUAP 0\rRD\rBT\rAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".encode(encoding = 'ascii'))
+     
+    start_hdd(args)
+    ava = start_avatar()
+
+    
+    bkpt_load_from_flash = ava.get_emulator().set_breakpoint(0x100aae)
+    def handle_load_from_flash(ava, bkpt):
+        global first_load_from_flash
+        ram_addr = ava.get_emulator().get_register("r1")
+        flash_addr = ava.get_emulator().get_register("r2")
+        len_in_words = ava.get_emulator().get_register("r3")
+        return_address = ava.get_emulator().get_register("lr")
+
+        if first_load_from_flash:
+            #First flash load needs to fail so we enter the serial menu 
+            ava.get_emulator().set_register("r0", 0xdead)
+            first_call = False
+        else:
+            log.info("Loading 0x%x bytes from flash address 0x%x to ram address 0x%x", len_in_words * 4, flash_addr, ram_addr)
+            if len_in_words > 0:
+                flash_file = os.path.join(configuration["configuration_directory"], "JC49_flash.raw")
+                ava.get_emulator().execute_gdb_command(["restore", 
+                                                    flash_file, 
+                                                    "binary", 
+                                                    "%d" % (ram_addr - flash_addr), 
+                                                    "0x%x" % flash_addr,
+                                                    "0x%x" % (flash_addr + 4 * len_in_words)])
+                with open(flash_file, 'rb') as file:
+                    file.seek(flash_addr)
+                    checksum = sum(file.read(len_in_words * 4))
+                ava.get_emulator().set_register("r0", checksum & 0xffff)
+            else:
+                ava.get_emulator().set_register("r0", 0)
+                 
+
+        #Return to caller
+        ava.get_emulator().set_register("pc", return_address & 0xFFFFFFFE)
+        thumb_bit = (return_address & 1) << 5
+        cpsr = ava.get_emulator().get_register("cpsr")
+        ava.get_emulator().set_register("cpsr", (cpsr & 0xFFFFFFDF) | thumb_bit)
+        ava.get_emulator().cont()
+    bkpt_load_from_flash.set_handler(handle_load_from_flash)
+        
+    #Set breakpoint before entry to main FW
+    bkpt_enter_fw_loaded_from_flash = ava.get_emulator().set_breakpoint(0x010065A)
+    ava.get_emulator().cont()
+    bkpt_enter_fw_loaded_from_flash.wait()
+    print("################### Reached the end, Avatar should terminate ###################")
+
+    sys.exit(0)
+
+def execute_main_fw_on_device():
+    configure()
+    start_hdd()
+    ava = start_avatar()
     boot_hdd_until_bootloader_firmware_entry(ava)
     boot_hdd_from_boot_firmware_entry_to_main_firmware_entry(ava)
     print("Arrived at the holy grail")
-    
-    
+
+        
+def main():
+    args = parse_arguments()
+    set_verbosity(args.verbosity)
+   
+    if args.action == "TRACE_BOOTLOADER":
+        trace_bootloader(args)
 
 if __name__ == "__main__":
     main()
