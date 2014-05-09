@@ -20,16 +20,39 @@ import time
 import sys
 import argparse
 import serial
+import qmp
+import json
 from avatar.targets.avatarstub_target import init_avatarstub_target
 from avatar.emulators.s2e.debug_s2e_emulator import init_debug_s2e_emulator
 from avatar.targets.gdbserver_target import init_gdbserver_target
 from collections import OrderedDict
-
+from usb_adapter import UsbScsiDevice
 
 from Seagate_ST3320413AS_flasher import ResetController, StubDownloader
 
 log = logging.getLogger(__name__)
 
+MAINFW_EMULATOR_LOCAL_MEMORY = [
+    {"address": 0x00000000, "size": 0x00000040, "type": "ro", "file": "binary/0x00000000_mainfw_IRQ_table.bin"},
+    {"address": 0x00000040, "size": 0x00007b00, "type": "ro", "file": "binary/0x00000040_mainfw_SRAM_code.bin"},
+    {"address": 0x00100000, "size": 0x00020000, "type": "ro", "file": "binary/0x00100000_ROM.bin"},
+    {"address": 0x00242f00, "size": 0x0006e454, "type": "ro", "file": "binary/0x00242f00_mainfw_DRAM_code.bin"},
+    {"address": 0x002b1354, "size": 0x00000040, "type": "ro", "file": "binary/0x002b1354_mainfw_DRAM.bin"},
+    {"address": 0x04000000, "size": 0x00004000, "type": "rw"},
+    {"address": 0x060b0000, "size": 0x00020000, "type": "rw"},
+    {"address": 0x06180000, "size": 0x00020000, "type": "rw"},
+    {"address": 0x400d3000, "size": 0x00001000, "type": "io"}]
+    
+    
+MEMORY_MAP = [
+    {"size": 0x00008000, "name": "sram_code",      "map": [{"address": 0x00000000, "type": "code", "permissions": "rwx"}]},
+    {"size": 0x00020000, "name": "rom_bootloader", "map": [{"address": 0x00100000, "type": "code", "permissions": "rx"}]},
+    {"size": 0x00004000, "name": "sram_data",      "map": [{"address": 0x04000000, "type": "data", "permissions": "rw"}]},
+    {"size": 0x00200000, "name": "dram_1",         "map": [{"address": 0x00200000, "type": "code", "permissions": "rx"}, {"address": 0x06000000, "type": "data", "permissions": "rw"}]},
+    {"size": 0x00e00000, "name": "dram_2",         "map": [{"address": 0x06200000, "type": "data", "permissions": "rw"}]}]
+    
+GDB_ADDRESS = ('127.0.0.1', 1235)
+QMP_ADDRESS = ('127.0.0.1', 1236)
 
 
 configuration = {
@@ -43,40 +66,15 @@ configuration = {
         "plugins": OrderedDict([
             ("BaseInstructions", {}),
             ("Initializer", {}),
-            ("MemoryInterceptor", ""),
-            ("RemoteMemory", {
-                "verbose": True,
-                "listen_address": "localhost:3333",
-                "ranges": {
-                    "sram_code": {
-                        "address": 0x8000, 
-                        "size": 0x100000 - 0x8000,
-                        "access": ["read", "write", "execute"]
-                    },
-                    "dram": {
-                        "address": 0x120000, 
-                        "size": 0x4000000 - 0x120000,
-                        "access": ["read", "write", "execute"]
-                    },
-                    "after_stack_before_uart": {
-                        "address": 0x4010000, 
-                        "size": 0x400d3000 - 0x4010000,
-                        "access": ["read", "write", "execute"]
-                    },
-                    "io_after_uart": {
-                        "address": 0x400d4000, 
-                        "size": 0x100000000 - 0x400d4000,
-                        "access": ["read", "write", "execute"]
-                    }
-                }
-            }),
        ]) 
     },
     "qemu_configuration": {
             "halt_processor_on_startup": True,
             "trace_instructions": True,
             "trace_microops": False,
-            "gdb": "tcp::1235,server,nowait",
+            "gdb": "tcp::%d,server,nowait" % GDB_ADDRESS[1],
+            "append": ["-qmp", "tcp::%d,server,nowait" % QMP_ADDRESS[1]],
+            "qmp": "tcp::%d,server,nowait" % QMP_ADDRESS[1],
 #            "append": ["-serial", "tcp::8888,server,nowait", "-nographic"]
 #            "append": ["-serial", "tcp::8888,server,nowait", "-qmp", "tcp::1238,server,nowait"]
 #            "append": ["-serial", "tcp::8888,server,nowait"]
@@ -86,81 +84,20 @@ configuration = {
             "endianness": "little",
             "cpu_model": "arm926",
             "entry_address": 0x100000,
-            "memory_map": [
+            "memory_map": MEMORY_MAP,
+            "devices": [
                 {
-                "size": 0x8000,
-                "name": "sram_code",
-                "map": [
-                    {
-                        "address": 0,
-                        "type": "code",
-                        "permissions": "rwx"
-                    }
-                ]
-            },
-            {
-                "size": 0x20000,
-                "name": "rom_bootloader",
-                "file": "hdd_rom.bin",
-                "is_rom": True,
-                "map": [
-                    {
-                        "address": 0x100000,
-                        "type": "code",
-                        "permissions": "rx"
-                    }
-                ]
-            },
-            {
-                "size": 0x200000,
-                "name": "dram_code",
-                "map": [
-                    {
-                        "address": 0x200000,
-                        "type": "code",
-                        "permissions": "rx"
-                    },
-                    {
-                        "address": 0x6000000,
-                        "type": "data", 
-                        "permissions": "rw"
-                    }]
-            },
-            {
-                "size": 0x10000,
-                "name": "sram_data",
-                "map": [
-                    {
-                        "address": 0x4000000,
-                        "type": "data",
-                        "permissions": "rw"
-                    }
-                ]
-            },
-            {
-                "size": 0xe00000,
-                "name": "dram_data",
-                "map": [
-                    {
-                        "address": 0x6200000,
-                        "type": "data",
-                        "permissions": "rw"
-                    }
-                ]
-            }
-                                    ],
-                                    "devices": [
-                                        {
-                                            "type": "serial",
-                                            "name": "uart16550",
-                                            "qemu_name": "sysbus-serial",
-                                            "address": 0x400d3000,
-                                            "bus": "sysbus"
-                                        }
-                                    ]
-                                },
+                    "type": "serial",
+                    "name": "uart16550",
+                    "qemu_name": "sysbus-serial",
+                    "address": 0x400d3000,
+                    "bus": "sysbus"
+                }
+            ]
+        },
     "avatar_configuration": {
-        "target_gdb_path":"../../gdb-arm/gdb/gdb"
+        "target_gdb_path":"../../gdb-arm/gdb/gdb",
+        "target_gdb_description": "../../avatar-gdbstub/xml/arm-gdbstub.xml"
     }
 }
 
@@ -228,8 +165,12 @@ def parse_arguments():
         help = "Directory where resulting configuration and log files will be stored")
     parser.add_argument("--hdd-port", type = int, default = 2000, dest = "hdd_port",
         help = "Port where HDD flasher is listening")
+    parser.add_argument("--dump-main-fw", action = "store_true", default = False, dest = "dump_main_fw", 
+        help = "Dump main FW when copying")
     action = parser.add_mutually_exclusive_group(required = True)
     action.add_argument("--trace-bootloader", dest = "action", action = "store_const", const = "TRACE_BOOTLOADER", help = "Trace bootloader access for CCS experiments")
+    action.add_argument("--trace-ata-identify", dest = "action", action = "store_const", const = "TRACE_IDENTIFY_ATA_CMD", help = "Trace ATA identify command (0xec) for CCS experiments")
+    action.add_argument("--debug-main-fw", dest = "action", action = "store_const", const = "DEBUG_MAIN_FW", help = "Start HDD with avatar attached until main fw is loaded")
         
     return parser.parse_args()
         
@@ -312,7 +253,7 @@ def boot_hdd_until_bootloader_firmware_entry(ava):
 #    bkpt_print_output_from_bootloader_fw.set_handler(handle_print_output_from_bootloader_fw)
     print("Apparently everything went well ...")
 
-def boot_hdd_from_boot_firmware_entry_to_main_firmware_entry(ava):
+def boot_hdd_from_boot_firmware_entry_to_main_firmware_entry(ava, dump_main_fw = False):
     # Move GDB stub to high memory
     ava.get_target().execute_gdb_command(
         ["restore", 
@@ -325,19 +266,34 @@ def boot_hdd_from_boot_firmware_entry_to_main_firmware_entry(ava):
     print("GDB stub moved")
 
     # Break right before entering bootstrapper to main fw
-    bkpt_before_bootstrapper_to_main_Fw = ava.get_target().set_breakpoint(0x246c28)
+    bkpt_before_bootstrapper_to_main_Fw = ava.get_target().set_breakpoint(0x246c30)
     ava.get_target().cont()
     bkpt_before_bootstrapper_to_main_Fw.wait()
     bkpt_before_bootstrapper_to_main_Fw.delete()
+
+    log.debug("Main FW bootstrapper: arg0 = 0x%08x, arg1 = 0x%08x, arg2 = 0x%08x, arg3 = 0x%08x", 
+              ava.get_target().get_register("r0"),
+              ava.get_target().get_register("r1"),
+              ava.get_target().get_register("r2"),
+              ava.get_target().get_register("r3"))
+#    ava.get_target().execute_gdb_command(["dump", "memory", os.path.join(configuration["output_directory"], "memdump_0x06300000.bin"),
+#                    "0x%x" % 0x6300000, "0x%x" % 0x6400000])
 
     bkpt_main_fw_bootstrapper_copy_section = ava.get_target().set_breakpoint(0x22ba1e)
     def handle_main_fw_bootstrapper_load_section(ava, bkpt):
         TEMP_READ_IRQ_TABLE_ADDRESS = 0x358000
         from_address = ava.get_target().get_register("r4")
         to_address = ava.get_target().get_register("r6")
-        size = ava.get_target().get_register("r7") >> 12
+        size = (ava.get_target().read_typed_memory(ava.get_target().get_register("r7"), 4) >> 12) * 4
         
         log.debug("Main FW bootstrapper: Copying section from 0x%08x to 0x%08x (size 0x%x)", from_address, to_address, size)
+
+        if size != 0 and dump_main_fw:
+            ava.get_target().execute_gdb_command(
+                ["dump", 
+                 "memory", 
+                 os.path.join(configuration["output_directory"], "mainfw_0x%08x.bin" % to_address),
+                "0x%x" % from_address, "0x%x" % (from_address + size)])
 
         if to_address == 0 and size != 0:
             for offset in [0, 4, 8, 0x14, 0x18, 0x1c, 0x20, 0x24, 0x28, 0x34, 0x38, 0x3c]:
@@ -346,6 +302,7 @@ def boot_hdd_from_boot_firmware_entry_to_main_firmware_entry(ava):
             ava.get_target().set_register("r4", ava.get_target().get_register("r4") + 0x40)
             ava.get_target().set_register("r6", ava.get_target().get_register("r6") + 0x40)
             ava.get_target().set_register("r5", ava.get_target().get_register("r5") + 0x10)
+#            bkpt_main_fw_bootstrapper_copy_section.delete()
         ava.get_target().cont()
     bkpt_main_fw_bootstrapper_copy_section.set_handler(handle_main_fw_bootstrapper_load_section)
     bkpt_jump_to_main_fw = ava.get_target().set_breakpoint(0x22ba44)
@@ -355,8 +312,13 @@ def boot_hdd_from_boot_firmware_entry_to_main_firmware_entry(ava):
     bkpt_main_fw_bootstrapper_copy_section.delete()
     bkpt_jump_to_main_fw.delete()
 
+    #Overwrite call to mprotect
     ava.get_target().write_typed_memory(0xa48, 2, 0x46c0)
     ava.get_target().write_typed_memory(0xa4a, 2, 0x46c0)
+
+    #Overwrite default UART baudrate in UART initialization
+    ava.get_target().write_typed_memory(0x40003bc, 2, 0x36)
+    
 
 def start_in_emulator(ava):
     bkpt_load_from_flash = ava.get_emulator().set_breakpoint(0x100aae)
@@ -413,6 +375,7 @@ def start_avatar():
     # Configure target GDB
     ava.get_target().execute_gdb_command(["set", "arm", "frame-register", "off"])
     ava.get_target().execute_gdb_command(["set", "arm", "force-mode", "thumb"])
+    ava.get_target().execute_gdb_command(["set", "tdesc", "filename", configuration["avatar_configuration"]["target_gdb_description"]])
 
     return ava
 
@@ -495,10 +458,40 @@ def trace_bootloader(args):
     if not "append" in configuration["qemu_configuration"]:
         configuration["qemu_configuration"]["append"] = []
     configuration["qemu_configuration"]["append"] += ["-serial", "file:%s" % os.path.join(configuration["output_directory"], "serial_output.txt")]
-
+    configuration["s2e"]["plugins"]["MemoryInterceptor"] = ""
+    configuration["s2e"]["plugins"]["RemoteMemory"] = {
+                "verbose": True,
+                "listen_address": "localhost:3333",
+                "ranges": {
+                    "sram_code": {
+                        "address": 0x8000, 
+                        "size": 0x100000 - 0x8000,
+                        "access": ["read", "write", "execute"]
+                    },
+                    "dram": {
+                        "address": 0x120000, 
+                        "size": 0x4000000 - 0x120000,
+                        "access": ["read", "write", "execute"]
+                    },
+                    "after_stack_before_uart": {
+                        "address": 0x4010000, 
+                        "size": 0x400d3000 - 0x4010000,
+                        "access": ["read", "write", "execute"]
+                    },
+                    "io_after_uart": {
+                        "address": 0x400d4000, 
+                        "size": 0x100000000 - 0x400d4000,
+                        "access": ["read", "write", "execute"]
+                    }
+                }
+            }
     configuration["s2e"]["plugins"]["ExecutionTracer"] = ""
-    configuration["s2e"]["plugins"]["InstructionTracer"] = "compression = \"gzip\""
-    configuration["s2e"]["plugins"]["MemoryTracer"] = "{monitorMemory = true, manualTrigger = false, timeTrigger = false}"
+    configuration["s2e"]["plugins"]["InstructionTracer"] = "" #"compression = \"gzip\""
+    configuration["s2e"]["plugins"]["MemoryTracer"] = """
+        monitorMemory = true, 
+        manualTrigger = false, 
+        timeTrigger = false
+    """
 
     add_emulated_serial_port_to_emulator_configuration("UUAP 0\rRD\rBT\rAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".encode(encoding = 'ascii'))
      
@@ -552,14 +545,194 @@ def trace_bootloader(args):
 
     sys.exit(0)
 
-def execute_main_fw_on_device():
-    configure()
-    start_hdd()
+def execute_main_fw_on_device(args):
+    configure(args)
+    start_hdd(args)
+    ava = start_avatar()
+    boot_hdd_until_bootloader_firmware_entry(ava)
+    boot_hdd_from_boot_firmware_entry_to_main_firmware_entry(ava, args.dump_main_fw)
+    print("Now connect wih arm-none-eabi-gdb to localhost:2000")
+
+def configure_full_forwarding(args):
+    sorted_ro_ranges = sorted(MAINFW_EMULATOR_LOCAL_MEMORY, key = lambda x: x["address"])
+    start = 0
+    ranges = {}
+    for ro_range in sorted_ro_ranges:
+        if ro_range["address"] - start > 0:
+            end = ro_range["address"]
+            ranges["range_0x%08x_0x%08x" % (start, end)] = {
+                "address": start,
+                "size": end - start,
+                "access": ["read", "write", "execute"]
+            }
+        start = ro_range["address"] + ro_range["size"]
+    if start != 0x100000000:
+        end = 0x100000000
+        ranges["range_0x%08x_0x%08x" % (start, end)] = {
+            "address": start,
+            "size": end - start,
+            "access": ["read", "write", "execute"]
+        }
+
+    configuration["s2e"]["plugins"]["MemoryInterceptor"] = ""
+    configuration["s2e"]["plugins"]["RemoteMemory"] = {
+        "verbose": True,
+        "listen_address": "127.0.0.1:3333",
+        "ranges" : ranges
+    }
+
+def load_mainfw_ro_memory_into_emulator(ava):
+    for mem_range in filter(lambda x: x["type"] == "ro", MAINFW_EMULATOR_LOCAL_MEMORY):
+        ava.get_emulator().execute_gdb_command([
+            "restore",
+            os.path.join(configuration["configuration_directory"], mem_range["file"]),
+            "binary",
+            "0x%x" % mem_range["address"]])
+
+def copy_rw_memory(fro, to):
+    for rw_range in filter(lambda x: x["type"] == "rw", MAINFW_EMULATOR_LOCAL_MEMORY):
+        filename = os.path.join(configuration["output_directory"], "s2e-last", "mem_0x%08x.bin" % rw_range["address"])
+        fro.execute_gdb_command(["dump", "memory", filename, "0x%x" % rw_range["address"], "0x%x" % (rw_range["address"] + rw_range["size"])])
+        to.execute_gdb_command(["restore", filename, "binary", "0x%x" % rw_range["address"]])
+
+def copy_cpu_registers(fro, to):
+    #We never use FIQ, do not copy this state (also there are some problems :) 
+    #Also do not copy abort, this is just the GDB stub stuff, and undefined, which is not used
+    #Order of the registers is important! (Which before cpsr and which after)
+    registers = {}
+    for reg in ["cpsr", "r0", "r1", "r2", "r3", 
+                "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12", "sp",
+                "lr", "pc", "sp_usr", "lr_usr", "spsr_usr", "sp_svc", "lr_svc", 
+                "spsr_svc", "sp_irq", "lr_irq", "spsr_irq"]: 
+        
+        reg_value = fro.get_register(reg)
+        to.set_register(reg, reg_value)
+        registers[reg] = reg_value
+        
+    with open(os.path.join(configuration["output_directory"], "s2e-last", "registers.json"), 'w') as file:
+        json.dump(registers, file)
+
+def trace_ata_identify(args):
+    configure(args)
+    configure_full_forwarding(args)
+    #Do more configuration here
+    configuration["s2e"]["plugins"]["LuaMonitorCommand"] = "verbose = true"
+    configuration["s2e"]["plugins"]["Snapshot"] = "verbose = true"
+    configuration["s2e"]["plugins"]["ExecutionTracer"] = "" #"compression = \"gzip\""
+    configuration["s2e"]["plugins"]["InstructionTracer"] = ""
+    configuration["s2e"]["plugins"]["MemoryTracer"] = """
+        monitorMemory = true,
+        manualTrigger = false, 
+        timeTrigger = false
+    """
+    start_hdd(args)
     ava = start_avatar()
     boot_hdd_until_bootloader_firmware_entry(ava)
     boot_hdd_from_boot_firmware_entry_to_main_firmware_entry(ava)
-    print("Arrived at the holy grail")
 
+    #Now ... 
+    #Set breakpoint in serial character receive handler, used to regain control afterwards
+    bkpt_interrupt = ava.get_target().set_breakpoint(0x2442aa)
+    #Change program a bit to handle 0x03 (break) instead of 0xdb and put a breakpoint on that handler
+#    ava.get_target().write_typed_memory(0x243d06, 2, 0x2c03) #cmp r4, #0x03
+#    ava.get_target().write_typed_memory(0x243d52, 2, 0xe7fa) #b loc243d4a
+#    bkpt_interrupt = ava.get_target().set_breakpoint(0x243d52)
+    ava.get_target().cont()
+
+#    bkpt_interrupt.wait()
+#    ava.get_target().cont()
+
+    #Wait for JMicron USB-SATA bridge to show up
+    #TODO: Prints LSUSB output, use Popen with PIPE to avoid
+    while True:
+        try:
+            subprocess.check_call(["lsusb", "-d", "152d:2338"])
+            break
+        except subprocess.CalledProcessError:
+            time.sleep(1)
+            continue
+
+    log.debug("USB SATA bridge showed up")
+
+    #Leave the OS some time to play with the disk ...
+    time.sleep(5)
+
+    #TODO: This should work, but it does not ... so work around by directly sending CTRL+C to the HDD
+#    ava.get_target().execute_gdb_command(["-exec-interrupt"])
+    with open(args.serial, 'wb') as serial_port:
+        serial_port.write(bytes([0x03]))
+
+    #Target should be stopped now
+    #Set breakpoint at SATA interrupt handler
+    bkpt_sata_irq = ava.get_target().set_breakpoint(0x1f42)
+    ava.get_target().cont()
+
+    #Send ATA identify packet (0xec)
+    usb_ata_bridge = UsbScsiDevice()
+    usb_ata_bridge.send_ata_command(0xec, False, 512, 1, 0, 0, 0)
+
+    #Breakpoint should have been hit now, just call wait to make sure
+    bkpt_sata_irq.wait()
+
+    print("Bkpt after waiting for SATA irq hit")
+
+
+    #TODO: Trigger snapshot of all RW-areas
+
+    #We need to execute one instruction in the emulator so that everything 
+    #works ... especially the Snapshot plugin
+    ava.get_emulator().write_typed_memory(0x0, 4, 0)
+    ava.get_emulator().write_typed_memory(0x4, 4, 0)
+    ava.get_emulator().set_register("pc", 0)
+    bkpt_init_emulator = ava.get_emulator().set_breakpoint(0x4)
+    ava.get_emulator().cont()
+    bkpt_init_emulator.wait()
+    bkpt_init_emulator.delete()
+    
+    #Load RO memory from files
+    load_mainfw_ro_memory_into_emulator(ava)
+    
+    copy_cpu_registers(ava.get_target(), ava.get_emulator())
+    copy_rw_memory(ava.get_target(), ava.get_emulator())
+
+    print("Now happily tracing ... ")
+
+    #Add a quirk to avoid getting stuck in the timer anti-jitter loop
+    ava.get_emulator().write_typed_memory(0x103c40, 2, 0x46c0) #NOP
+    ava.get_emulator().write_typed_memory(0x181c, 2, 0x46c0) #NOP
+    ava.get_emulator().write_typed_memory(0x1027A4, 2, 0x4770) #BX LR
+    
+    
+    #Take a snapshot that can be used to restore stuff for symbolic execution
+    qmp_console = qmp.QEMUMonitorProtocol(QMP_ADDRESS)
+    qmp_console.connect()
+    
+    qmp_console.cmd("s2e-exec", 
+        {
+            "cmd": "lua", 
+            "lua": "Snapshot.takeSnapshot('before_trace', 7, " + \
+                "{" + \
+                    "{address = 0x00000000, size = 0x00008000}, " + \
+                    "{address = 0x00100000, size = 0x00020000}, " + \
+                    "{address = 0x04000000, size = 0x00004000}, " + \
+                    "{address = 0x06000000, size = 0x01000000}})"
+        })
+
+    #This breakpoint is in the idle task, which is only called when all other tasks have no work
+    #(i.e., when the current request has been served)
+    bkpt_end_of_trace = ava.get_emulator().set_breakpoint(0x00253a06)
+
+    #Trace execution
+    ava.get_emulator().cont()
+
+    bkpt_end_of_trace.wait()
+    #Hara kiri!
+    os.kill(os.getpid(), 9)
+    
+#    usb_ata_bridge.receive_mass_storage_response(512)
+
+def replay_ata_identify(args):
+    pass
         
 def main():
     args = parse_arguments()
@@ -567,262 +740,12 @@ def main():
    
     if args.action == "TRACE_BOOTLOADER":
         trace_bootloader(args)
+    elif args.action == "TRACE_IDENTIFY_ATA_CMD":
+        trace_ata_identify(args)
+    elif args.action == "DEBUG_MAIN_FW":
+        execute_main_fw_on_device(args)        
+    elif args.action == "REPLAY_IDENTIFY_ATA_CMD":
+        replay_ata_identify(args)
 
 if __name__ == "__main__":
     main()
-    
-
-# ava = System(configuration, init_s2e_emulator, init_avatarstub_target)
-# #ava = System(configuration, init_s2e_emulator, init_gdbserver_target)
-# ava.init()
-# # target_runner = TargetLauncher(["qemu-system-arm", 
-# #                                 "-M",  "versatilepb", 
-# #                                 "-m", "20M", 
-# #                                 "-serial", "udp:127.0.0.1:2000",
-# #                                 "-kernel", "/home/zaddach/projects/eurecom-s2e/avatar/avatar/example_binaries/qemu_versatilepb/u-boot",
-# #                                 "-gdb", "tcp:127.0.0.1:1234",
-# #                                 "-S"])
-# #TODO: Start target here
-# ava.add_monitor(RWMonitor())
-# 
-# time.sleep(3)
-# ava.start()
-# 
-# print("blablabla")
-# bkpt_load_from_flash_rom = ava.get_emulator().set_breakpoint(0x100aae)
-# def load_from_flash_handler(system, bkpt):
-#     ram_addr = system.get_emulator().get_register("r1")
-#     flash_addr = system.get_emulator().get_register("r2")
-#     len_in_words = system.get_emulator().get_register("r3")
-#     return_address = system.get_emulator().get_register("lr")
-#     log.info("Loading 0x%x bytes from flash address 0x%x to ram address 0x%x", len_in_words * 4, flash_addr, ram_addr)
-#     if len_in_words > 0:
-#         f = open(os.path.join(os.getcwd(), "JC49_flash.raw"), "rb")
-#         f.seek(flash_addr)
-#         system.get_emulator().write_untyped_memory(ram_addr, f.read(len_in_words * 4))
-#  
-#     system.get_emulator().set_register("pc", return_address & 0xFFFFFFFE)
-#     system.get_emulator().set_register("cpsr", (system.get_emulator().get_register("cpsr") & 0xFFFFFFDF) | ((return_address & 0x1) << 5))
-#     system.get_emulator().cont()
-#      
-# bkpt_load_from_flash_rom.set_handler(load_from_flash_handler)
-# bkpt_loaded_code_entry = ava.get_emulator().set_breakpoint(0x10087c)
-# ava.get_emulator().cont()
-#  
-# bkpt_loaded_code_entry.wait()
-# bkpt_loaded_code_entry.delete()
-# print("QQQ Starting execution of loaded code ...")
-#  
-# bkpt_boot_fw_entry = ava.get_emulator().set_breakpoint(0x23e)
-# ava.get_emulator().cont()
-#  
-# bkpt_boot_fw_entry.wait()
-# bkpt_boot_fw_entry.delete()
-# print("QQQ Starting execution of boot FW")
-#  
-# bkpt_load_from_flash_bootfw = ava.get_emulator().set_breakpoint(0x301e)
-# bkpt_load_from_flash_bootfw.set_handler(load_from_flash_handler)
-#  
-# bkpt_before_sdram_initialization = ava.get_emulator().set_breakpoint(0x1146)
-# ava.get_emulator().cont()
-#  
-# bkpt_before_sdram_initialization.wait()
-# print("SDRAM initialization reached")
-#  
-# #Transfer state from emulator to device
-# cpu_state = {}
-# for reg in ["r0", "r1", "r2", "r3", 
-#             "r4", "r5", "r6", "r7", 
-#             "r8", "r9", "r10", "r11", 
-#             "r12", "sp", "lr", "pc", "cpsr"]:
-#     value = ava.get_emulator().get_register(reg)
-#     cpu_state[reg] = hex(value)
-#     ava.get_target().set_register(reg, ava.get_emulator().get_register(reg))
-#  
-# f = open("cpu_state.gdb", "w")
-# for (reg, val) in cpu_state.items():
-#     f.write("set $%s = %s\n" % (reg, val))
-# f.close()
-# print("CPU state: %s" % cpu_state.__str__())
-# #At this point we have a problem:
-# #The DDR memory initialization function is time-critical, i.e. 
-# #its execution fails when run in emulator, since the forwarding
-# #is too slow.
-# #So we extract that bit of code that is time-critical (0x1146-0x1218) plus
-# #its dependencies (0x1314-0x134c) and copy it to the VM
-# code_memory = ava.get_emulator().read_untyped_memory(0x1146, 0x1218 - 0x1146)
-# constant_pool = ava.get_emulator().read_untyped_memory(0x1314, 0x134c - 0x1314)
-# f = open("code_memory", "wb")
-# f.write(code_memory)
-# f.close()
-# f = open("constant_pool", "wb")
-# f.write(constant_pool)
-# f.close()
-# ava.get_target().write_untyped_memory(0x1146, code_memory)
-# ava.get_target().write_untyped_memory(0x1314, constant_pool)
-# 
-# 
-# #Only testing stuff
-# #     ava.get_target().write_typed_memory(0x1000, 2, 0x4801) #LDR r0, [pc, #4]
-# #     ava.get_target().write_typed_memory(0x1002, 2, 0x2158) #MOVS r1, #'X'
-# #     ava.get_target().write_typed_memory(0x1004, 2, 0x6001) #STR r1, [r0, #0]
-# #     ava.get_target().write_typed_memory(0x1006, 2, 0xe7fb) #B .-10
-# #     ava.get_target().write_typed_memory(0x1008, 4, 0x400d3000) 
-# #     ava.get_target().set_register("pc", 0x1000)
-# #     ava.get_target().set_register("cpsr", 0xf3)
-# #bkpt_after_ram_init = ava.get_target().set_breakpoint(0x1006, thumb = True)
-# 
-# bkpt_after_ram_init = ava.get_target().set_breakpoint(0x1218, thumb = True)
-# 
-# ava.get_target().cont()
-# 
-# bkpt_after_ram_init.wait()
-# 
-# print("YESSSSSSSSSSSSSSS! We hit the breakpoint!")
-# 
-# #Transfer state to emulator
-# for reg in ["r0", "r1", "r2", "r3", 
-#             "r4", "r5", "r6", "r7", 
-#             "r8", "r9", "r10", "r11", 
-#             "r12", "sp", "lr", "pc", "cpsr"]:
-#     value = ava.get_target().get_register(reg)
-#     ava.get_emulator().set_register(reg, value)
-#     
-# bkpt_boot_fw_init = ava.get_emulator().set_breakpoint(0x4fc)
-#     
-# ava.get_emulator().cont()
-# 
-# bkpt_boot_fw_init.wait()
-# 
-# bkpt_dev_0x400d2000_init = ava.get_emulator().set_breakpoint(0x14aa)
-# ava.get_emulator().cont()
-# bkpt_dev_0x400d2000_init.wait()
-# #Transfer state to target
-# for reg in ["r0", "r1", "r2", "r3", 
-#             "r4", "r5", "r6", "r7", 
-#             "r8", "r9", "r10", "r11", 
-#             "r12", "sp", "lr", "pc", "cpsr"]:
-#     value = ava.get_emulator().get_register(reg)
-#     ava.get_target().set_register(reg, value)
-# ava.get_target().write_untyped_memory(0x14aa, ava.get_emulator().read_untyped_memory(0x14aa, 0x14b6 - 0x14aa))
-# bkpt_after_dev_0x400d2000_init = ava.get_target().set_breakpoint(0x14b6)
-# ava.get_target().cont()
-# 
-# bkpt_after_dev_0x400d2000_init.wait()
-# 
-# #Transfer state to emulator
-# for reg in ["r0", "r1", "r2", "r3", 
-#             "r4", "r5", "r6", "r7", 
-#             "r8", "r9", "r10", "r11", 
-#             "r12", "sp", "lr", "pc", "cpsr"]:
-#     value = ava.get_target().get_register(reg)
-#     ava.get_emulator().set_register(reg, value)
-#     
-# bkpt_in_timer_read_function = ava.get_emulator().set_breakpoint(0x103c3a)
-# 
-# def skip_timer_loop_handler(system, bkpt):
-#     log.debug("Skipping timer loop")
-#     system.get_emulator().set_register("pc", 0x103c42)
-#     system.get_emulator().cont()
-# bkpt_in_timer_read_function.set_handler(skip_timer_loop_handler)
-# 
-# bkpt_before_ddram_setup = ava.get_target().set_breakpoint(0xfa2)
-# bkpt_in_timer_function = ava.get_target().set_breakpoint(0x103c36)
-# ava.get_emulator().cont()
-# bkpt_in_timer_function.wait()
-# #bkpt_before_ddram_setup.wait()
-#     
-# print("YESSSSSSSSSSSSSSS! We hit the breakpoint X!")
-#     
-# # bkpt_in_boot_fw_task_2 = ava.get_target().set_breakpoint(0x29ea)
-# # ava.get_emulator().cont()
-# # 
-# # bkpt_in_boot_fw_task_2.wait()
-# 
-# # CODE_ADDRESS= 0x1000
-# # def get_code_callback(address, length):
-# #     try:
-# #         print("We are supposed to fetch memory 0x%x (%d bytes) from emulator" % (address, length))
-# #         data = ava.get_emulator().read_untyped_memory(address, length)
-# #         return data
-# #     except:
-# #         log.exception("Exception in Callback")
-# # 
-# # instrumented_code = binary_translator.instrument_memory_access(
-# #     architecture = "thumb", 
-# #     entry_point = 0x1146, 
-# #     valid_pc_ranges = [(0x1146, 0x1218)] , 
-# #     generated_code_address = CODE_ADDRESS, 
-# #     get_code_callback = get_code_callback, 
-# #     opts = {})
-# # f = open("code.bin", "wb")
-# # f.write(instrumented_code["generated_code"])
-# # f.close()
-# # ava.get_target().install_codelet(CODE_ADDRESS, instrumented_code["generated_code"])
-# # ava.get_target().execute_codelet(CODE_ADDRESS | 1)
-# 
-# 
-# print("YESSSSSSSSSSSSSSS! We hit the breakpoint 2!")
-# 
-# #CODE_ADDRESS = 0x2000
-# #READ_INSTRUMENTATION_HANDLER = 0x4001 #TODO
-# #WRITE_INSTRUMENTATION_HANDLER = 0x4003 #TODO
-# #
-# ##For now we use a simple entry stub into the generated code that just consists of a call function
-# ##(arguments will be set up through this script a bit down)
-# ##BL <CODE_ADDRESS>
-# #avatar.get_target().write_typed_memory(0x1000, 2, 0xF000 | ((CODE_ADDRESS >> 12) & 0x7ff))
-# #avatar.get_target().write_typed_memory(0x1002, 2, 0xF800 | ((CODE_ADDRESS >> 1) & 0x7ff))
-# ##NOP where breakpoint will be put
-# #avatar.get_target().write_typed_memory(0x1004, 2, 0x46c0)
-# #avatar.get_target().write_typed_memory(0x1006, 2, 0x46c0)
-# #avatar.get_target().write_typed_memory(0x1008, 2, 0x46c0)
-# #avatar.get_target().write_typed_memory(0x100a, 2, 0x46c0)
-# #avatar.get_target().write_typed_memory(0x100c, 2, 0x46c0)
-# ##now translate the code
-# #instrumented_code = binary_translator.instrument_memory_access(
-# #    architecture = "thumb", 
-# #    entry_point = 0x1146, 
-# #    valid_pc_ranges = [(0x1146, 0x1218)] , 
-# #    generated_code_address = CODE_ADDRESS, 
-# #    get_code_callback = avatar.get_emulator().read_untyped_memory, 
-# #    opts = {})
-# #avatar.get_target().write_untyped_memory(0x2000, instrumented_code)
-# ##Set up the register map
-# #avatar.get_target().write_typed_memory(0x1010, 4, avatar.get_emulator().get_register("r0"))
-# #avatar.get_target().write_typed_memory(0x1014, 4, avatar.get_emulator().get_register("r1"))
-# #avatar.get_target().write_typed_memory(0x1018, 4, avatar.get_emulator().get_register("r2"))
-# #avatar.get_target().write_typed_memory(0x101c, 4, avatar.get_emulator().get_register("r3"))
-# #avatar.get_target().write_typed_memory(0x1020, 4, avatar.get_emulator().get_register("r4"))
-# #avatar.get_target().write_typed_memory(0x1024, 4, avatar.get_emulator().get_register("r5"))
-# #avatar.get_target().write_typed_memory(0x1028, 4, avatar.get_emulator().get_register("r6"))
-# #avatar.get_target().write_typed_memory(0x102c, 4, avatar.get_emulator().get_register("r7"))
-# #avatar.get_target().write_typed_memory(0x1030, 4, avatar.get_emulator().get_register("r8"))
-# #avatar.get_target().write_typed_memory(0x1034, 4, avatar.get_emulator().get_register("r9"))
-# #avatar.get_target().write_typed_memory(0x1038, 4, avatar.get_emulator().get_register("r10"))
-# #avatar.get_target().write_typed_memory(0x103c, 4, avatar.get_emulator().get_register("r11"))
-# #avatar.get_target().write_typed_memory(0x1040, 4, avatar.get_emulator().get_register("r12"))
-# #avatar.get_target().write_typed_memory(0x1044, 4, avatar.get_emulator().get_register("sp"))
-# #avatar.get_target().write_typed_memory(0x1048, 4, avatar.get_emulator().get_register("lr"))
-# #avatar.get_target().write_typed_memory(0x104c, 4, avatar.get_emulator().get_register("cpsr"))
-# ##Write handler addresses
-# #avatar.get_target().write_typed_memory(0x1100, 4, READ_INSTRUMENTATION_HANDLER)
-# #avatar.get_target().write_typed_memory(0x1104, 4, WRITE_INSTRUMENTATION_HANDLER)
-# ##Set up function arguments
-# #avatar.get_target().set_register("r0", 0x1010)
-# #avatar.get_target().set_register("r1", 0x1100)
-# #avatar.get_target().set_register("pc", 0x1000)
-# #avatar.get_target().set_register("cpsr", 0x1f | 0x20 | 0xc0) #System mode, thumb, interrupts disabled
-# ##AAAAAAAAAAAAND now - execute the shit!
-# #bkpt_code_finished = avatar.get_target().set_breakpoint(0x1004, thumb = True)
-# #avatar.get_target().cont()
-# 
-# 
-# while True:
-#     ava.get_emulator()._gdb_interface._gdb.sync_cmd(sys.stdin.readline().split(" "), "done")
-# 
-# #ava.emulator.set_breakpoint(0x650)
-# #bkpt = avatar.emulator.set_breakpoint(0x650)
-# #bkpt.wait()
-# #avatar.copy_state_to_target()
-# #avatar.target.continue()
