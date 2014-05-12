@@ -35,6 +35,7 @@ log = logging.getLogger(__name__)
 MAINFW_EMULATOR_LOCAL_MEMORY = [
     {"address": 0x00000000, "size": 0x00000040, "type": "ro", "file": "binary/0x00000000_mainfw_IRQ_table.bin"},
     {"address": 0x00000040, "size": 0x00007b00, "type": "ro", "file": "binary/0x00000040_mainfw_SRAM_code.bin"},
+    {"address": 0x00010000, "size": 0x00020000, "type": "ro", "file": "binary/0x00010000_mainfw_cache_code.bin"},
     {"address": 0x00100000, "size": 0x00020000, "type": "ro", "file": "binary/0x00100000_ROM.bin"},
     {"address": 0x00242f00, "size": 0x0006e454, "type": "ro", "file": "binary/0x00242f00_mainfw_DRAM_code.bin"},
     {"address": 0x002b1354, "size": 0x00000040, "type": "ro", "file": "binary/0x002b1354_mainfw_DRAM.bin"},
@@ -46,7 +47,8 @@ MAINFW_EMULATOR_LOCAL_MEMORY = [
     
 MEMORY_MAP = [
     {"size": 0x00008000, "name": "sram_code",      "map": [{"address": 0x00000000, "type": "code", "permissions": "rwx"}]},
-    {"size": 0x00020000, "name": "rom_bootloader", "map": [{"address": 0x00100000, "type": "code", "permissions": "rx"}]},
+    {"size": 0x00020000, "name": "sram_code_2",    "map": [{"address": 0x00010000, "type": "code", "permissions": "rx"}]},
+    {"size": 0x00010000, "name": "rom_bootloader", "map": [{"address": 0x00100000, "type": "code", "permissions": "rx"}]},
     {"size": 0x00004000, "name": "sram_data",      "map": [{"address": 0x04000000, "type": "data", "permissions": "rw"}]},
     {"size": 0x00200000, "name": "dram_1",         "map": [{"address": 0x00200000, "type": "code", "permissions": "rx"}, {"address": 0x06000000, "type": "data", "permissions": "rw"}]},
     {"size": 0x00e00000, "name": "dram_2",         "map": [{"address": 0x06200000, "type": "data", "permissions": "rw"}]}]
