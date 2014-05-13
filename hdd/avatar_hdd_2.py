@@ -715,6 +715,7 @@ def trace_ata_identify(args):
             "lua": "Snapshot.takeSnapshot('before_trace', 7, " + \
                 "{" + \
                     "{address = 0x00000000, size = 0x00008000}, " + \
+                    "{address = 0x00010000, size = 0x00020000}, " + \
                     "{address = 0x00100000, size = 0x00020000}, " + \
                     "{address = 0x04000000, size = 0x00004000}, " + \
                     "{address = 0x06000000, size = 0x01000000}})"
