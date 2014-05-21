@@ -95,8 +95,11 @@ class UsbScsiDevice():
         self._ep_out.write(request)
 
     def receive_mass_storage_response(self, size):
-
-        data = self._ep_in.read(size)
+    
+        if size > 0:
+            data = self._ep_in.read(size)
+        else:
+            data = bytes()
         reply = self._ep_in.read(13)
         assert(len(reply) == 13)
         header = struct.unpack("<4sLLB", reply)
@@ -106,7 +109,6 @@ class UsbScsiDevice():
         assert(header[0] == "USBS".encode(encoding = 'ascii'))
         assert(header[1] == self._tag - 1)
         #TODO: Check return code and throw error
-
         return data
 
     def get_registers(self, addr, size):
@@ -131,22 +133,50 @@ class UsbScsiDevice():
                     command])
         self.send_mass_storage_command(0, direction, xfer_len * 512, cdb)
 
-    def identify_device(self):
+    def ata_identify_device(self):
         dev.send_ata_command(0xec, False, 512, 1, 0, 0, 0)
         return dev.receive_mass_storage_response(512)
 
     def read(self, lba, sector_count):
         pass
+
+    def scsi_read_capacity(self):
+        cdb = bytes([0x25, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+        self.send_mass_storage_command(0, UsbScsiDevice.DIRECTION_IN, 8, cdb)
+        return struct.unpack("<Q", self.receive_mass_storage_response(8))
+
+    def send_scsi_read(self, lba, length, flags = 0, control = 0, group = 0):
+        cdb = struct.pack(">BBLBHB", 0x28, flags, lba, group, length, control)
+        self.send_mass_storage_command(0, UsbScsiDevice.DIRECTION_IN, length * 512, cdb)
+
+    def scsi_read(self, lba, length, flags = 0, control = 0, group = 0):
+        self.send_scsi_read(lba, length, flags, control, group)
+        return self.receive_mass_storage_response(length * 512)
+
+    def send_scsi_write(self, lba, data, flags = 0, control = 0, group = 0):
+        if len(data) % 512 != 0:
+            data = data + bytes([0] * (512 - len(data) % 512))
+        length = int(len(data) / 512)
+        cdb = struct.pack(">BBLBHB", 0x2a, flags, lba, group, length, control)
+        self.send_mass_storage_command(0, UsbScsiDevice.DIRECTION_OUT, length * 512, cdb)
+        self._ep_out.write(data)
         
+    def scsi_write(self, lba, data, flags = 0, control = 0, group = 0):
+        self.send_scsi_write(lba, data, flags, control, group)
+        return self.receive_mass_storage_response(0)
 
 def main():
     args = parse_args()
 
     dev = UsbScsiDevice()
 #    dev.send_ata_command(0xec, False, 512, 1, 0, 0, 0)
-    dev.send_ata_command(0x25, True, 0, 0, 0, 0, 0)
-    dev.send_ata_command(0x25, False, 512, 1, 0, 0, 0)
-    dev.receive_mass_storage_response(512)
+#    dev.send_ata_command(0x25, True, 0, 0, 0, 0, 0)
+#    dev.send_ata_command(0x25, False, 512, 1, 0, 0, 0)
+#    dev.receive_mass_storage_response(512)
+
+#    dev.scsi_read(0x12345678, 0x42)
+#    dev.scsi_write(0x12345678, bytes([0] * 512))
+    dev.send_ata_command(0x80, False, 0, 0, 0, 0, 0)
 
 
 #    dev._ep_out.write([0x55, 0x53, 0x42, 0x43, #Signature

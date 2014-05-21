@@ -671,7 +671,10 @@ def trace_ata_identify(args):
 
     #Send ATA identify packet (0xec)
     usb_ata_bridge = UsbScsiDevice()
+#    usb_ata_bridge.send_ata_command(0x00, False, 0, 0, 0, 0x7654321, 0)
     usb_ata_bridge.send_ata_command(0xec, False, 512, 1, 0, 0, 0)
+#    usb_ata_bridge.send_scsi_read(0x12345678, 0x42)
+#    usb_ata_bridge.send_scsi_write(0xdeadbeef, bytes([(x & 0xff) for x in range(0, 2048)]))
 
     #Breakpoint should have been hit now, just call wait to make sure
     bkpt_sata_irq.wait()

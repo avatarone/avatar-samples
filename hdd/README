@@ -9,3 +9,7 @@ Description of the reverse engineering of the Seagate ST3320413AS HDD with Avata
   QEMU, since the emulator is too fast and the UART never will appear busy
   -> Write 0x46c0 (nop) to address 0x100852 to skip this polling loop
 - See from memory map that region 0x04000400 - 0x0400c200 seems to be stack .. -> make not-forwarded
+
+
+== Prepare the HDD ==
+- Disable BGMS background activity: Serial menu, /TF1E4,0
