@@ -630,7 +630,7 @@ def trace_ata_identify(args):
     start_hdd(args)
     ava = start_avatar()
     boot_hdd_until_bootloader_firmware_entry(ava)
-    boot_hdd_from_boot_firmware_entry_to_main_firmware_entry(ava)
+    boot_hdd_from_boot_firmware_entry_to_main_firmware_entry(ava, args.dump_main_fw)
 
     #Now ... 
     #Set breakpoint in serial character receive handler, used to regain control afterwards
