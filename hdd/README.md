@@ -14,14 +14,16 @@ Description of the reverse engineering of the Seagate ST3320413AS HDD with Avata
 All installation assumes that the avatar-pandora repository has been checked out to ${HOME}/projects/avatar-pandora.
 
 == Install required packages ==
-```sudo apt-get-get install texinfo libexpat1-dev python2.7-dev liblua5.1-0-dev libsigc++-dev libsigc++-2.0-dev```
+```sudo apt-get-get install texinfo libexpat1-dev python2.7-dev liblua5.1-0-dev libsigc++-dev libsigc++-2.0-dev
+sudo usermod -a -G dialout ${USER}```
 
 == Install pyusb ==
 ```cd ${HOME}/projects/incubator
    git clone git@github.com:walac/pyusb.git
    cd pyusb
    sudo python setup.py install
-   sudo python3 setup.py install```
+   sudo python3 setup.py install
+   sudo bash -c "echo 'SUBSYSTEMS==\"usb\", ATTRS{idVendor}==\"152d\", ATTRS{idProduct}==\"2338\", GROUP=\"plugdev\", MODE=\"660\"' > /etc/udev/rules.d/99-libusb.rules"```
 
 == Prepare the HDD ==
 - Disable BGMS background activity: Serial menu, /TF1E4,0
