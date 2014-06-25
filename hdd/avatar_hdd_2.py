@@ -63,6 +63,7 @@ configuration = {
     "s2e": {
         "s2e_binary": "QEMU_S2E" in os.environ and os.environ["QEMU_S2E"] or os.path.expanduser("~/projects/avatar-pandora/s2e-build/qemu-release/arm-s2e-softmmu/qemu-system-arm"),
         "emulator_gdb_path":"../../gdb-arm/gdb/gdb",
+        "emulator_gdb_additional_arguments": ["--data-directory=%s" % os.path.abspath("../../gdb-arm/gdb/data-directory")],
         "klee": {
         },
         "plugins": OrderedDict([
@@ -77,6 +78,7 @@ configuration = {
             "gdb": "tcp::%d,server,nowait" % GDB_ADDRESS[1],
             "append": ["-qmp", "tcp::%d,server,nowait" % QMP_ADDRESS[1]],
             "qmp": "tcp::%d,server,nowait" % QMP_ADDRESS[1],
+            "append": ["-nographic", "-monitor", "/dev/null"],
 #            "append": ["-serial", "tcp::8888,server,nowait", "-nographic"]
 #            "append": ["-serial", "tcp::8888,server,nowait", "-qmp", "tcp::1238,server,nowait"]
 #            "append": ["-serial", "tcp::8888,server,nowait"]
@@ -99,7 +101,8 @@ configuration = {
         },
     "avatar_configuration": {
         "target_gdb_path":"../../gdb-arm/gdb/gdb",
-        "target_gdb_description": "../../avatar-gdbstub/xml/arm-gdbstub.xml"
+        "target_gdb_description": "../../avatar-gdbstub/xml/arm-gdbstub.xml",
+        "target_gdb_additional_arguments": ["--data-directory=%s" % os.path.abspath("../../gdb-arm/gdb/data-directory")]
     }
 }
 
@@ -172,6 +175,8 @@ def parse_arguments():
     action = parser.add_mutually_exclusive_group(required = True)
     action.add_argument("--trace-bootloader", dest = "action", action = "store_const", const = "TRACE_BOOTLOADER", help = "Trace bootloader access for CCS experiments")
     action.add_argument("--trace-ata-identify", dest = "action", action = "store_const", const = "TRACE_IDENTIFY_ATA_CMD", help = "Trace ATA identify command (0xec) for CCS experiments")
+    action.add_argument("--trace-ata-read", dest = "action", action = "store_const", const = "TRACE_READ_ATA_CMD", help = "Trace ATA read command (0x25)")
+    action.add_argument("--trace-ata-write", dest = "action", action = "store_const", const = "TRACE_WRITE_ATA_CMD", help = "Trace ATA write command (0x35)")
     action.add_argument("--debug-main-fw", dest = "action", action = "store_const", const = "DEBUG_MAIN_FW", help = "Start HDD with avatar attached until main fw is loaded")
         
     return parser.parse_args()
@@ -555,6 +560,16 @@ def execute_main_fw_on_device(args):
     boot_hdd_from_boot_firmware_entry_to_main_firmware_entry(ava, args.dump_main_fw)
     print("Now connect wih arm-none-eabi-gdb to localhost:2000")
 
+def execute_backdoor(args):
+    configure(args)
+    start_hdd(args)
+    ava = start_avatar()
+    boot_hdd_until_bootloader_firmware_entry(ava)
+    boot_hdd_from_boot_firmware_entry_to_main_firmware_entry(ava, args.dump_main_fw)
+
+    #TODO: Patch firmware here with backdoor
+    print("Now connect wih arm-none-eabi-gdb to localhost:2000")
+
 def configure_full_forwarding(args):
     sorted_ro_ranges = sorted(MAINFW_EMULATOR_LOCAL_MEMORY, key = lambda x: x["address"])
     start = 0
@@ -614,7 +629,7 @@ def copy_cpu_registers(fro, to):
     with open(os.path.join(configuration["output_directory"], "s2e-last", "registers.json"), 'w') as file:
         json.dump(registers, file)
 
-def trace_ata_identify(args):
+def trace_ata_command(args):
     configure(args)
     configure_full_forwarding(args)
     #Do more configuration here
@@ -671,10 +686,16 @@ def trace_ata_identify(args):
 
     #Send ATA identify packet (0xec)
     usb_ata_bridge = UsbScsiDevice()
-#    usb_ata_bridge.send_ata_command(0x00, False, 0, 0, 0, 0x7654321, 0)
-    usb_ata_bridge.send_ata_command(0xec, False, 512, 1, 0, 0, 0)
-#    usb_ata_bridge.send_scsi_read(0x12345678, 0x42)
-#    usb_ata_bridge.send_scsi_write(0xdeadbeef, bytes([(x & 0xff) for x in range(0, 2048)]))
+    if args.action == "TRACE_IDENTIFY_ATA_CMD":
+        usb_ata_bridge.send_ata_command(0xec, False, 512, 1, 0, 0, 0)
+    elif args.action == "TRACE_READ_ATA_CMD":
+        usb_ata_bridge.send_scsi_read(0x12345678, 0x42)
+    elif args.action == "TRACE_WRITE_ATA_CMD":
+        usb_ata_bridge.send_scsi_write(0xdeadbeef, bytes([(x & 0xff) for x in range(0, 2048)]))
+    
+        
+
+#    usb_ata_bridge.send_ata_command_xxx(0x00, False, 0, 0, 0, 0x7654321, 0) #DO NOT EXECUTE THIS COMMAND! BRICKS THE HDD!
 
     #Breakpoint should have been hit now, just call wait to make sure
     bkpt_sata_irq.wait()
@@ -726,7 +747,7 @@ def trace_ata_identify(args):
 
     #This breakpoint is in the idle task, which is only called when all other tasks have no work
     #(i.e., when the current request has been served)
-    bkpt_end_of_trace = ava.get_emulator().set_breakpoint(0x00253a06)
+    bkpt_end_of_trace = ava.get_emulator().set_breakpoint(0x00253a06) #For FW JC47
 
     #Trace execution
     ava.get_emulator().cont()
@@ -746,8 +767,8 @@ def main():
    
     if args.action == "TRACE_BOOTLOADER":
         trace_bootloader(args)
-    elif args.action == "TRACE_IDENTIFY_ATA_CMD":
-        trace_ata_identify(args)
+    elif args.action in ["TRACE_IDENTIFY_ATA_CMD", "TRACE_READ_ATA_CMD", "TRACE_WRITE_ATA_CMD"]:
+        trace_ata_command(args)
     elif args.action == "DEBUG_MAIN_FW":
         execute_main_fw_on_device(args)        
     elif args.action == "REPLAY_IDENTIFY_ATA_CMD":
