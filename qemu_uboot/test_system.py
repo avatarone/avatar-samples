@@ -20,23 +20,18 @@ configuration = {
         "plugins": {
             "BaseInstructions": {},
             "Initializer": {},
+            "MemoryInterceptor": "",
             "RemoteMemory": {
                 "verbose": True,
-                "listen_address": "localhost:3333"
+                "listen_address": "localhost:3333",
+                "ranges":  {
+                    "sram_code": {
+                        "address": 32768,
+                        "size": 1048575,
+                        "access": ["read", "write", "execute", "io", "memory", "concrete_value", "concrete_address"]
+                    }
+                }
             },
-            "MemoryInterceptorMediator": {
-                "verbose": True,
-                            "interceptors": {
-                                "RemoteMemory": {
-                                    "sram_code": {
-                                        "range_start": 32768,
-                                        "range_end": 1048575,
-                                        "priority": 0,
-                                        "access_type": ["read", "write", "execute", "io", "memory", "concrete_value", "concrete_address"]
-                                    }
-                                }
-                            }
-            }
         }
     },
     "qemu_configuration": {
@@ -65,7 +60,7 @@ configuration = {
                 "name": "text_data_bss",
                 "file": "u-boot.bin",
                 "map": [{
-                    "address": 16777216,
+                    "address": 0x1000000,
                     "type": "code",
                     "permissions": "rwx"}]
             }
@@ -75,7 +70,7 @@ configuration = {
                                             "type": "serial",
                                             "name": "uart16550",
                                             "qemu_name": "sysbus-serial",
-                                            "address": 0x1000000,
+                                            "address": 0x101f1000,
                                             "bus": "sysbus"
                                         }
                                     ]
@@ -135,10 +130,11 @@ target_runner = TargetLauncher(["qemu-system-arm",
                                 "-M",  "versatilepb", 
                                 "-m", "20M", 
                                 "-serial", "udp:127.0.0.1:2000",
-                                "-kernel", "/home/zaddach/projects/eurecom-s2e/avatar/avatar/example_binaries/qemu_versatilepb/u-boot",
+                                "-kernel", "u-boot",
                                 "-gdb", "tcp:127.0.0.1:1234",
                                 "-S"])
 ava.add_monitor(RWMonitor())
 
 time.sleep(3)
 ava.start()
+ava.get_emulator().cont()
