@@ -13,8 +13,12 @@ from collections import OrderedDict
 log = logging.getLogger(__name__)
 
 
+#FORWARDED_MEMORY = {
+#    "all_memory": {"address": 0x00000000, "size": 0xffffffff, "access": ["read", "write", "execute", "io", "memory", "concrete_value", "concrete_address"]}
+#}
 FORWARDED_MEMORY = {
-    "all_memory": {"address": 0x00000000, "size": 0xffffffff, "access": ["read", "write", "execute", "io", "memory", "concrete_value", "concrete_address"]}
+    "before_code": {"address": 0x00000000, "size": 0x1000000, "access": ["read", "write", "execute", "io", "memory", "concrete_value", "concrete_address"]},
+    "after_code": {"address": 0x01019000, "size": 0xffffffff - 0x01019000, "access": ["read", "write", "execute", "io", "memory", "concrete_value", "concrete_address"]}
 }
 
 EMULATOR_MAPPED_MEMORY = [
