@@ -9,17 +9,18 @@ import time
 import tempfile
 import argparse
 from collections import OrderedDict
+import sys
 
 log = logging.getLogger(__name__)
 
 
-#FORWARDED_MEMORY = {
-#    "all_memory": {"address": 0x00000000, "size": 0xffffffff, "access": ["read", "write", "execute", "io", "memory", "concrete_value", "concrete_address"]}
-#}
 FORWARDED_MEMORY = {
-    "before_code": {"address": 0x00000000, "size": 0x1000000, "access": ["read", "write", "execute", "io", "memory", "concrete_value", "concrete_address"]},
-    "after_code": {"address": 0x01019000, "size": 0xffffffff - 0x01019000, "access": ["read", "write", "execute", "io", "memory", "concrete_value", "concrete_address"]}
+    "all_memory": {"address": 0x101f1000, "size": 0x00001000, "access": ["read", "write", "execute", "io", "memory", "concrete_value", "concrete_address"]}
 }
+#FORWARDED_MEMORY = {
+#    "before_code": {"address": 0x00000000, "size": 0x1000000, "access": ["read", "write", "execute", "io", "memory", "concrete_value", "concrete_address"]},
+#    "after_code": {"address": 0x01019000, "size": 0xffffffff - 0x01019000, "access": ["read", "write", "execute", "io", "memory", "concrete_value", "concrete_address"]}
+#}
 
 EMULATOR_MAPPED_MEMORY = [
     {"size": 0x00001000, "name": "interrupts", "map": [{"address": 0, "type": "code", "permissions": "rwx"}]},
@@ -99,6 +100,7 @@ class TargetLauncher(object):
             self._process.kill()
             
     def run(self):
+        log.debug("TargetLauncher is starting process %s", " ".join(['"%s"' % x for x in self._cmd]))
         self._process = subprocess.call(self._cmd)
         
 def main(args, env):
@@ -112,10 +114,10 @@ def main(args, env):
     target_runner = TargetLauncher([qemu, 
                                     "-M",  "versatilepb", 
                                     "-m", "20M", 
+                                    "-serial", "tcp::1234,server",
                                     "-serial", "udp:127.0.0.1:2000",
-                                    "-kernel", "u-boot",
-                                    "-gdb", "tcp:127.0.0.1:1234",
-                                    "-S"])
+                                    "-kernel", "gdbstub_qemu_versatilepb",
+                                    ])
     time.sleep(3)
     ava.start()
 
