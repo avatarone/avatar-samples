@@ -15,12 +15,10 @@ log = logging.getLogger(__name__)
 
 
 FORWARDED_MEMORY = {
-    "all_memory": {"address": 0x101f1000, "size": 0x00001000, "access": ["read", "write", "execute", "io", "memory", "concrete_value", "concrete_address"]}
+    "before_code": {"address": 0x00000000, "size": 0x1000000, "access": ["read", "write", "execute", "io", "memory", "concrete_value", "concrete_address"]},
+    "after_code": {"address": 0x01019000, "size": 0x101f1000- 0x01019000, "access": ["read", "write", "execute", "io", "memory", "concrete_value", "concrete_address"]},
+    "after_serial": {"address": 0x101f2000, "size": 0xffffffff - 0x101f2000, "access": ["read", "write", "execute", "io", "memory", "concrete_value", "concrete_address"]},
 }
-#FORWARDED_MEMORY = {
-#    "before_code": {"address": 0x00000000, "size": 0x1000000, "access": ["read", "write", "execute", "io", "memory", "concrete_value", "concrete_address"]},
-#    "after_code": {"address": 0x01019000, "size": 0xffffffff - 0x01019000, "access": ["read", "write", "execute", "io", "memory", "concrete_value", "concrete_address"]}
-#}
 
 EMULATOR_MAPPED_MEMORY = [
     {"size": 0x00001000, "name": "interrupts", "map": [{"address": 0, "type": "code", "permissions": "rwx"}]},
@@ -59,7 +57,7 @@ def build_configuration(args, env):
             "trace_instructions": True,
             "trace_microops": False,
             "gdb": "tcp::1235,server,nowait",
-            "append": ["-serial", "tcp::8888,server,nowait"]
+            "append": ["-serial", "tcp:127.0.0.1:8888,server"]
         },
         "machine_configuration": {
             "architecture": "arm",
@@ -70,14 +68,14 @@ def build_configuration(args, env):
                 {
                     "type": "serial",
                     "name": "uart16550",
-                    "qemu_name": "sysbus-serial",
+                    "qemu_name": "pl011",
                     "address": 0x101f1000,
                     "bus": "sysbus"
                 }
             ] 
         },
         "avatar_configuration": {
-            "target_gdb_address": "tcp:localhost:1234",
+            "target_gdb_address": "tcp:127.0.0.1:1234",
             "target_gdb_additional_arguments": ["--data-directory=%s" % os.path.join(args.gdb_path, "gdb/data-directory")],
             "target_gdb_path": args.gdb
         }
@@ -114,9 +112,10 @@ def main(args, env):
     target_runner = TargetLauncher([qemu, 
                                     "-M",  "versatilepb", 
                                     "-m", "20M", 
-                                    "-serial", "tcp::1234,server",
-                                    "-serial", "udp:127.0.0.1:2000",
-                                    "-kernel", "gdbstub_qemu_versatilepb",
+                                    "-gdb", "tcp:127.0.0.1:1234",
+                                    "-serial", "tcp:127.0.0.1:2000,server",
+                                    "-kernel", "u-boot",
+                                    "-S"
                                     ])
     time.sleep(3)
     ava.start()
@@ -125,10 +124,10 @@ def main(args, env):
     ava.get_emulator().cont()
     bkpt_clear_bss.wait()
     print("==================== Arrived at clear_bss ===========================")
-#    bkpt_main_loop = ava.get_emulator().set_breakpoint(0x0100af34)
-#    ava.get_emulator().cont()
-#    bkpt_main_loop.wait()
-#    print("Arrived at main loop, demo is over")
+    bkpt_main_loop = ava.get_emulator().set_breakpoint(0x0100af34)
+    ava.get_emulator().cont()
+    bkpt_main_loop.wait()
+    print("Arrived at main loop, demo is over")
     
 def parse_args():
     parser = argparse.ArgumentParser(description = "Minimal Avatar script with Qemu as target")
