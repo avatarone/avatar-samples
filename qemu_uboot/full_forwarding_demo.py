@@ -15,13 +15,15 @@ log = logging.getLogger(__name__)
 
 
 FORWARDED_MEMORY = {
-    "before_code": {"address": 0x00000000, "size": 0x1000000, "access": ["read", "write", "execute", "io", "memory", "concrete_value", "concrete_address"]},
+    "before_code": {"address": 0x00000000, "size": 0xfdd000, "access": ["read", "write", "execute", "io", "memory", "concrete_value", "concrete_address"]},
     "after_code": {"address": 0x01019000, "size": 0x101f1000- 0x01019000, "access": ["read", "write", "execute", "io", "memory", "concrete_value", "concrete_address"]},
     "after_serial": {"address": 0x101f2000, "size": 0xffffffff - 0x101f2000, "access": ["read", "write", "execute", "io", "memory", "concrete_value", "concrete_address"]},
 }
 
 EMULATOR_MAPPED_MEMORY = [
     {"size": 0x00001000, "name": "interrupts", "map": [{"address": 0, "type": "code", "permissions": "rwx"}]},
+    {"size": 0x00001000, "name": "init_mem", "map": [{"address": 0xfdd000, "type": "data", "permissions": "rwx"}]},
+    {"size": 0x00022000, "name": "heap", "map": [{"address": 0xfde000, "type": "data", "permissions": "rwx"}]},
     {"size": 0x00019000, "name": "text_data_bss", "file": "u-boot.bin", "map": [{"address": 0x1000000, "type": "code", "permissions": "rwx"}],}
 ]
 
